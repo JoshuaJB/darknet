@@ -36,6 +36,13 @@ region_layer make_region_layer(int batch, int w, int h, int n, int classes, int 
     l.truths = max_boxes*l.truth_size;
     l.delta = (float*)xcalloc(batch * l.outputs, sizeof(float));
     l.output = (float*)xcalloc(batch * l.outputs, sizeof(float));
+#ifdef GPU
+    // Temporary used as a bounce buffer in forward_region_layer_gpu().
+    // Allocated here to avoid an allocate/free on the critical path.
+    // Must be a pinned memory allocation, as cudaMemcpy() must sometimes
+    // use a higher-overhead internal bounce buffer when copying to paged mem
+    l.temp_cpu = (float*)cuda_make_array_pinned(NULL, l.batch * l.inputs);
+#endif
     int i;
     for(i = 0; i < n*2; ++i){
         l.biases[i] = .5;
@@ -452,22 +459,19 @@ void forward_region_layer_gpu(const region_layer l, network_state state)
         softmax_gpu(l.output_gpu+5, l.classes, l.classes + 5, l.w*l.h*l.n*l.batch, 1, l.output_gpu + 5);
     }
 
-    float* in_cpu = (float*)xcalloc(l.batch * l.inputs, sizeof(float));
     float *truth_cpu = 0;
     if(state.truth){
         int num_truth = l.batch*l.truths;
         truth_cpu = (float*)xcalloc(num_truth, sizeof(float));
         cuda_pull_array(state.truth, truth_cpu, num_truth);
     }
-    cuda_pull_array(l.output_gpu, in_cpu, l.batch*l.inputs);
-    //cudaStreamSynchronize(get_cuda_stream());
+    cuda_pull_array(l.output_gpu, l.temp_cpu, l.batch*l.inputs);
     network_state cpu_state = state;
     cpu_state.train = state.train;
     cpu_state.truth = truth_cpu;
-    cpu_state.input = in_cpu;
+    cpu_state.input = l.temp_cpu;
     forward_region_layer(l, cpu_state);
     //cuda_push_array(l.output_gpu, l.output, l.batch*l.outputs);
-    free(cpu_state.input);
     if(!state.train) return;
     cuda_push_array(l.delta_gpu, l.delta, l.batch*l.outputs);
     //cudaStreamSynchronize(get_cuda_stream());
