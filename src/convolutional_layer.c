@@ -1179,7 +1179,7 @@ void binary_align_weights(convolutional_layer *l)
 
     //l->mean_arr_gpu = cuda_make_array(l->mean_arr, l->n);
     cuda_push_array(l->mean_arr_gpu, l->mean_arr, l->n);
-    CHECK_CUDA(cudaDeviceSynchronize());
+    CHECK_CUDA(cudaStreamSynchronize(get_cuda_stream()));
 #endif // GPU
 
     free(align_weights);

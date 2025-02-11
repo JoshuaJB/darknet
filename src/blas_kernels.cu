@@ -36,7 +36,7 @@ void compare_2_arrays_gpu(float *one, float *two, int size)
 
     compare_2_arrays_kernel << <num_blocks, BLOCK, 0, get_cuda_stream() >> >(one, two, size);
     CHECK_CUDA(cudaPeekAtLastError());
-    CHECK_CUDA(cudaDeviceSynchronize());
+    CHECK_CUDA(cudaStreamSynchronize(get_cuda_stream()));
 }
 
 __global__ void mean_array_kernel(float *src, int size, float alpha, float *avg)
@@ -1523,7 +1523,7 @@ extern "C" int is_nan_or_inf(float *input, size_t size)
     const int block_size = BLOCK;
     const int num_blocks = get_number_of_blocks(size, block_size);
     is_nan_or_inf_kernel << <num_blocks, block_size, 0, get_cuda_stream() >> >(input, size, pinned_return);
-    CHECK_CUDA(cudaDeviceSynchronize());
+    CHECK_CUDA(cudaStreamSynchronize(get_cuda_stream()));
     int ret_val = *pinned_return;
 
     CHECK_CUDA(cudaFreeHost(pinned_return));

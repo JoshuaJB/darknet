@@ -715,7 +715,7 @@ float *network_predict_gpu(network net, float *input)
             for (i = 0; i < 16; ++i) switch_stream(i);
 
             cudaStream_t stream0 = switch_stream(0);
-            CHECK_CUDA(cudaDeviceSynchronize());
+            CHECK_CUDA(cudaStreamSynchronize(stream0));
             printf("Try to capture graph... \n");
             //cudaGraph_t graph = (cudaGraph_t)net.cuda_graph;
             CHECK_CUDA(cudaStreamBeginCapture(stream0, cudaStreamCaptureModeGlobal));
@@ -730,7 +730,7 @@ float *network_predict_gpu(network net, float *input)
             CHECK_CUDA(cudaGraphInstantiate(&instance, graph, NULL, NULL, 0));
             (*net.cuda_graph_ready) = 1;
             printf(" graph is captured... \n");
-            CHECK_CUDA(cudaDeviceSynchronize());
+            CHECK_CUDA(cudaStreamSynchronize(stream0));
         }
         CHECK_CUDA(cudaStreamSynchronize(get_cuda_stream()));
     }
