@@ -1173,9 +1173,9 @@ void binary_align_weights(convolutional_layer *l)
     //l->align_bit_weights_gpu = cuda_make_array(l->align_bit_weights, l->align_bit_weights_size * sizeof(char)/sizeof(float));
     status = cudaMalloc((void **)&l->align_bit_weights_gpu, l->align_bit_weights_size);
     CHECK_CUDA(status);
-    status = cudaMemcpy(l->align_bit_weights_gpu, l->align_bit_weights, l->align_bit_weights_size, cudaMemcpyHostToDevice);
+    status = cudaMemcpyAsync(l->align_bit_weights_gpu, l->align_bit_weights, l->align_bit_weights_size, cudaMemcpyHostToDevice, get_cuda_stream());
     CHECK_CUDA(status);
-    status = cudaMemcpy(l->binary_weights_gpu, l->binary_weights, m*k * sizeof(float), cudaMemcpyHostToDevice);
+    status = cudaMemcpyAsync(l->binary_weights_gpu, l->binary_weights, m*k * sizeof(float), cudaMemcpyHostToDevice, get_cuda_stream());
     CHECK_CUDA(status);
 
     //l->mean_arr_gpu = cuda_make_array(l->mean_arr, l->n);
