@@ -2678,6 +2678,8 @@ void gemm_ongpu(int TA, int TB, int M, int N, int K, float ALPHA,
         float *C_gpu, int ldc)
 {
     cublasHandle_t handle = blas_handle();
+    // All cuBLAS handles are associated with a stream at initialization, so
+    // we have to re-set it here in case switch_stream() has been called
     cudaError_t stream_status = (cudaError_t)cublasSetStream(handle, get_cuda_stream());
     CHECK_CUDA(stream_status);
     cudaError_t status = (cudaError_t)cublasSgemm(handle, (TB ? CUBLAS_OP_T : CUBLAS_OP_N),
