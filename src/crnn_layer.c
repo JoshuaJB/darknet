@@ -125,7 +125,7 @@ void resize_crnn_layer(layer *l, int w, int h)
     l->state = (float*)xrealloc(l->state, l->batch*l->hidden*(l->steps + 1)*sizeof(float));
 
 #ifdef GPU
-    if (l->state_gpu) cudaFree(l->state_gpu);
+    if (l->state_gpu) cuda_free(l->state_gpu);
     l->state_gpu = cuda_make_array(l->state, l->batch*l->hidden*(l->steps + 1));
 
     l->output_gpu = l->output_layer->output_gpu;

@@ -1166,12 +1166,11 @@ void binary_align_weights(convolutional_layer *l)
 #ifdef GPU
     cudaError_t status;
     l->align_workspace_size = l->bit_align * l->size * l->size * l->c;
-    status = cudaMalloc((void **)&l->align_workspace_gpu, l->align_workspace_size * sizeof(float));
-    status = cudaMalloc((void **)&l->transposed_align_workspace_gpu, l->align_workspace_size * sizeof(float));
-    CHECK_CUDA(status);
+    l->align_workspace_gpu = cuda_make_array(NULL, l->align_workspace_size);
+    l->transposed_align_workspace_gpu = cuda_make_array(NULL, l->align_workspace_size);
 
     //l->align_bit_weights_gpu = cuda_make_array(l->align_bit_weights, l->align_bit_weights_size * sizeof(char)/sizeof(float));
-    status = cudaMalloc((void **)&l->align_bit_weights_gpu, l->align_bit_weights_size);
+    status = cudaMallocAsync((void **)&l->align_bit_weights_gpu, l->align_bit_weights_size, get_cuda_stream());
     CHECK_CUDA(status);
     status = cudaMemcpyAsync(l->align_bit_weights_gpu, l->align_bit_weights, l->align_bit_weights_size, cudaMemcpyHostToDevice, get_cuda_stream());
     CHECK_CUDA(status);

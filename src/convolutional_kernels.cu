@@ -154,7 +154,7 @@ half *cuda_make_f16_from_f32_array(float *src, size_t n)
 {
     half *dst16;
     size_t size = sizeof(half)*n;
-    CHECK_CUDA(cudaMalloc((void **)&dst16, size));
+    CHECK_CUDA(cudaMallocAsync((void **)&dst16, size, get_cuda_stream()));
     if (src) {
         assert(n > 0);
         cuda_convert_f32_to_f16(src, n, (float *)dst16);

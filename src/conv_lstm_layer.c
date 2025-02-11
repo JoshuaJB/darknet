@@ -521,67 +521,67 @@ void resize_conv_lstm_layer(layer *l, int w, int h)
     l->stored_h_cpu = (float*)xrealloc(l->stored_h_cpu, batch*outputs * sizeof(float));
 
 #ifdef GPU
-    //if (l->state_gpu) cudaFree(l->state_gpu);
+    //if (l->state_gpu) cuda_free(l->state_gpu);
     //l->state_gpu = cuda_make_array(l->state, batch*l->outputs);
 
-    if (l->output_gpu) cudaFree(l->output_gpu);
+    if (l->output_gpu) cuda_free(l->output_gpu);
     l->output_gpu = cuda_make_array(0, batch*outputs*steps);
 
-    if (l->delta_gpu) cudaFree(l->delta_gpu);
+    if (l->delta_gpu) cuda_free(l->delta_gpu);
     l->delta_gpu = cuda_make_array(0, batch*outputs*steps);
 
-    if (l->prev_state_gpu) cudaFree(l->prev_state_gpu);
+    if (l->prev_state_gpu) cuda_free(l->prev_state_gpu);
     l->prev_state_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->prev_cell_gpu) cudaFree(l->prev_cell_gpu);
+    if (l->prev_cell_gpu) cuda_free(l->prev_cell_gpu);
     l->prev_cell_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->cell_gpu) cudaFree(l->cell_gpu);
+    if (l->cell_gpu) cuda_free(l->cell_gpu);
     l->cell_gpu = cuda_make_array(0, batch*outputs*steps);
 
-    if (l->f_gpu) cudaFree(l->f_gpu);
+    if (l->f_gpu) cuda_free(l->f_gpu);
     l->f_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->i_gpu) cudaFree(l->i_gpu);
+    if (l->i_gpu) cuda_free(l->i_gpu);
     l->i_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->g_gpu) cudaFree(l->g_gpu);
+    if (l->g_gpu) cuda_free(l->g_gpu);
     l->g_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->o_gpu) cudaFree(l->o_gpu);
+    if (l->o_gpu) cuda_free(l->o_gpu);
     l->o_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->c_gpu) cudaFree(l->c_gpu);
+    if (l->c_gpu) cuda_free(l->c_gpu);
     l->c_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->h_gpu) cudaFree(l->h_gpu);
+    if (l->h_gpu) cuda_free(l->h_gpu);
     l->h_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->temp_gpu) cudaFree(l->temp_gpu);
+    if (l->temp_gpu) cuda_free(l->temp_gpu);
     l->temp_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->temp2_gpu) cudaFree(l->temp2_gpu);
+    if (l->temp2_gpu) cuda_free(l->temp2_gpu);
     l->temp2_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->temp3_gpu) cudaFree(l->temp3_gpu);
+    if (l->temp3_gpu) cuda_free(l->temp3_gpu);
     l->temp3_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->dc_gpu) cudaFree(l->dc_gpu);
+    if (l->dc_gpu) cuda_free(l->dc_gpu);
     l->dc_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->dh_gpu) cudaFree(l->dh_gpu);
+    if (l->dh_gpu) cuda_free(l->dh_gpu);
     l->dh_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->stored_c_gpu) cudaFree(l->stored_c_gpu);
+    if (l->stored_c_gpu) cuda_free(l->stored_c_gpu);
     l->stored_c_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->stored_h_gpu) cudaFree(l->stored_h_gpu);
+    if (l->stored_h_gpu) cuda_free(l->stored_h_gpu);
     l->stored_h_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->last_prev_state_gpu) cudaFree(l->last_prev_state_gpu);
+    if (l->last_prev_state_gpu) cuda_free(l->last_prev_state_gpu);
     l->last_prev_state_gpu = cuda_make_array(0, batch*outputs);
 
-    if (l->last_prev_cell_gpu) cudaFree(l->last_prev_cell_gpu);
+    if (l->last_prev_cell_gpu) cuda_free(l->last_prev_cell_gpu);
     l->last_prev_cell_gpu = cuda_make_array(0, batch*outputs);
 #endif
 }

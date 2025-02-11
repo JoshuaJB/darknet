@@ -223,15 +223,15 @@ void resize_maxpool_layer(maxpool_layer *l, int w, int h)
     l->output = (float*)xrealloc(l->output, output_size * sizeof(float));
 
 #ifdef GPU
-    CHECK_CUDA(cudaFree(l->output_gpu));
+    cuda_free(l->output_gpu);
     l->output_gpu  = cuda_make_array(l->output, output_size);
 
     if (l->train) {
         if (!l->avgpool) {
-            CHECK_CUDA(cudaFree((float *)l->indexes_gpu));
+            cuda_free((float *)l->indexes_gpu);
             l->indexes_gpu = cuda_make_int_array(output_size);
         }
-        CHECK_CUDA(cudaFree(l->delta_gpu));
+        cuda_free(l->delta_gpu);
         l->delta_gpu = cuda_make_array(l->delta, output_size);
     }
 
