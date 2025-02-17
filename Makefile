@@ -1,4 +1,4 @@
-GPU=0
+GPU=1
 CUDNN=0
 CUDNN_HALF=0
 OPENCV=0
@@ -20,7 +20,8 @@ DEBUG=0
 ARCH= -gencode arch=compute_35,code=sm_35 \
       -gencode arch=compute_50,code=[sm_50,compute_50] \
       -gencode arch=compute_52,code=[sm_52,compute_52] \
-	    -gencode arch=compute_61,code=[sm_61,compute_61]
+      -gencode arch=compute_61,code=[sm_61,compute_61] \
+      -gencode arch=compute_70,code=[sm_70,compute_70]
 
 OS := $(shell uname)
 
@@ -74,10 +75,10 @@ CC=gcc
 endif
 
 CPP=g++ -std=c++11
-NVCC=nvcc
-OPTS=-Ofast
-LDFLAGS= -lm -pthread
-COMMON= -Iinclude/ -I3rdparty/stb/include
+NVCC=/playpen/jbakita/CUDA/cuda-archive/cuda-11.8/bin/nvcc
+OPTS=-g #-Ofast
+LDFLAGS= -lm -pthread -L/playpen/mc2/liblitmus -llitmus
+COMMON= -Iinclude/ -I3rdparty/stb/include -I/playpen/mc2/liblitmus/include/ -I/playpen/mc2/liblitmus/arch/x86/include/
 CFLAGS=-Wall -Wfatal-errors -Wno-unused-result -Wno-unknown-pragmas -fPIC
 
 ifeq ($(DEBUG), 1)
@@ -114,12 +115,12 @@ LDFLAGS+= -lgomp
 endif
 
 ifeq ($(GPU), 1)
-COMMON+= -DGPU -I/usr/local/cuda/include/
+COMMON+= -DGPU -I/playpen/jbakita/CUDA/cuda-archive/cuda-11.8/include/
 CFLAGS+= -DGPU
 ifeq ($(OS),Darwin) #MAC
-LDFLAGS+= -L/usr/local/cuda/lib -lcuda -lcudart -lcublas -lcurand
+LDFLAGS+= -L/playpen/jbakita/CUDA/cuda-archive/cuda-11.8/lib -L/playpen/jbakita/gpu_subdiv/libsmctrl -lsmctrl -lcuda -lcudart -lcublas -lcurand -ldl
 else
-LDFLAGS+= -L/usr/local/cuda/lib64 -lcuda -lcudart -lcublas -lcurand
+LDFLAGS+= -L/playpen/jbakita/CUDA/cuda-archive/cuda-11.8/lib64 -L/playpen/jbakita/gpu_subdiv/libsmctrl -lsmctrl -lcuda -lcudart -lcublas -lcurand -ldl
 endif
 endif
 

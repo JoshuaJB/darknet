@@ -8,6 +8,8 @@
 #include "box.h"
 #include "demo.h"
 #include "option_list.h"
+#include "/playpen/jbakita/gpu_subdiv/extra.h"
+#include "/playpen/jbakita/gpu_subdiv/libsmctrl/libsmctrl.h"
 
 #ifndef __COMPAR_FN_T
 #define __COMPAR_FN_T
@@ -20,6 +22,37 @@ typedef __compar_fn_t comparison_fn_t;
 #include "http_stream.h"
 
 int check_mistakes = 0;
+
+// === Case Study Defines ===
+//#define RANGE
+// Uncomment to test dissimilar stream priorities for each detector instance
+//#define TEST_PRI
+
+// In-order to allow running validate_detector() in a thread via
+// pthread_create(), it can only take one argument. This structure is used as
+// that one argument.
+typedef struct {
+    // First four arguments are original to Darknet
+    char *datacfg;
+    char *cfgfile;
+    char *weightfile;
+    char *outfile;
+    // Partitioning mask to be applied to this detector thread
+    uint64_t sm_mask;
+    // Arguments to extra.h
+    int argc;
+    char **argv;
+    // Flag value. Once set, the detector thread constantly calls
+    // network_predict() in a loop to generate interference. Once cleared, said
+    // thread will immediately exit. Used to create "evil" tasks in the case
+    // study.
+    bool *evil;
+    // Set to use the priority value (as 0 is a valid priority, it cannot be
+    // used as a flag value)
+    bool use_priority;
+    // CUDA stream priority to use with this detector
+    int priority;
+} validate_thread_args_t;
 
 static int coco_ids[] = { 1,2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,20,21,22,23,24,25,27,28,31,32,33,34,35,36,37,38,39,40,41,42,43,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,67,70,72,73,74,75,76,77,78,79,80,81,82,84,85,86,87,88,89,90 };
 
@@ -640,8 +673,14 @@ static void print_bdd_detections(FILE *fp, char *image_path, detection *dets, in
     }
 }
 
-void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *outfile)
+void* validate_detector(void *args_raw)
 {
+    validate_thread_args_t *argz = (validate_thread_args_t*)args_raw;
+    char *datacfg = argz->datacfg;
+    char *cfgfile = argz->cfgfile;
+    char *weightfile = argz->weightfile;
+    char *outfile = argz->outfile;
+
     int j;
     list *options = read_data_cfg(datacfg);
     char *valid_images = option_find_str(options, "valid", "data/train.list");
@@ -733,7 +772,7 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
     float thresh = .001;
     float nms = .6;
 
-    int nthreads = 4;
+    int nthreads = 1;
     if (m < 4) nthreads = m;
     image* val = (image*)xcalloc(nthreads, sizeof(image));
     image* val_resized = (image*)xcalloc(nthreads, sizeof(image));
@@ -748,6 +787,12 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
     args.type = IMAGE_DATA;
     const int letter_box = net.letter_box;
     if (letter_box) args.type = LETTERBOX_DATA;
+    if (argz->use_priority) {
+        set_stream_priority(argz->priority);
+        printf("Using priority %d with stream %lx\n", argz->priority, get_cuda_stream());
+    }
+    printf("Using mask %lx with stream %lx\n", argz->sm_mask, get_cuda_stream());
+    libsmctrl_set_stream_mask(get_cuda_stream(), argz->sm_mask);
 
     for (t = 0; t < nthreads; ++t) {
         args.path = paths[i + t];
@@ -756,8 +801,12 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
         thr[t] = load_data_in_thread(args);
     }
     time_t start = time(0);
-    for (i = nthreads; i < m + nthreads; i += nthreads) {
-        fprintf(stderr, "%d\n", i);
+    if (argz->argc) {
+        printf("%s: Waiting for task system release...\n", argz->argv[4]);
+        _rt_load_params_itrl(argz->argc, argz->argv);
+    }
+    for (i = nthreads; i < m + nthreads && (!argz->argc || i < _rt_max_jobs); i += nthreads) {
+//        fprintf(stderr, "%d\n", i);
         for (t = 0; t < nthreads && i + t - nthreads < m; ++t) {
             pthread_join(thr[t], 0);
             val[t] = buf[t];
@@ -770,10 +819,21 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
             thr[t] = load_data_in_thread(args);
         }
         for (t = 0; t < nthreads && i + t - nthreads < m; ++t) {
+            if (argz->argc)
+                START_LOOP
             char *path = paths[i + t - nthreads];
             char *id = basecfg(path);
             float *X = val_resized[t].data;
-            network_predict(net, X);
+            // Flip this flag to trigger a "malfunction", i.e. infinite loop.
+            // Flip it back to exit the malfunctioning thread.
+            if (argz->argc && *argz->evil) {
+                while (*argz->evil) {
+                    network_predict(net, X);
+                }
+                return NULL;
+            } else {
+                network_predict(net, X);
+            }
             int w = val[t].w;
             int h = val[t].h;
             int nboxes = 0;
@@ -782,6 +842,8 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
                 if (l.nms_kind == DEFAULT_NMS) do_nms_sort(dets, nboxes, l.classes, nms);
                 else diounms_sort(dets, nboxes, l.classes, nms, l.nms_kind, l.beta_nms);
             }
+            if (argz->argc)
+                STOP_LOOP
 
             if (coco) {
                 print_cocos(fp, path, dets, nboxes, classes, w, h);
@@ -839,6 +901,9 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
     if (buf_resized) free(buf_resized);
 
     fprintf(stderr, "Total Detection Time: %f Seconds\n", (double)time(0) - start);
+    if (argz->argc)
+        WRITE_TO_FILE
+    return NULL;
 }
 
 void validate_detector_recall(char *datacfg, char *cfgfile, char *weightfile)
@@ -2037,7 +2102,164 @@ void run_detector(int argc, char **argv)
     char *filename = (argc > 6) ? argv[6] : 0;
     if (0 == strcmp(argv[2], "test")) test_detector(datacfg, cfg, weights, filename, thresh, hier_thresh, dont_show, ext_output, save_labels, outfile, letter_box, benchmark_layers);
     else if (0 == strcmp(argv[2], "train")) train_detector(datacfg, cfg, weights, gpus, ngpus, clear, dont_show, calc_map, thresh, iou_thresh, mjpeg_port, show_imgs, benchmark_layers, chart_path);
-    else if (0 == strcmp(argv[2], "valid")) validate_detector(datacfg, cfg, weights, outfile);
+    else if (0 == strcmp(argv[2], "valid")) {
+        // All members without an explict initializer are initialized following
+        // static initialization rules, which are that the value must be zero
+        // (C Std, 6.7.8/10).
+        validate_thread_args_t args = {datacfg, cfg, weights, outfile};
+        validate_detector(&args);
+    }
+    else if (0 == strcmp(argv[2], "rtas23") || 0 == strcmp(argv[2], "rtas23-B")) {
+        bool t1_evil = 0;
+        bool t2_evil = 0;
+        const int NUM_THREADS = 5;
+        pthread_t t[NUM_THREADS];
+        // Generate output naming
+        const int MAX_POSTFIX = 100;
+        const int MAX_PREFIX = 11;
+        char lognames[NUM_THREADS][MAX_PREFIX + MAX_POSTFIX];
+        time_t now = time(NULL);
+        // Use prefix MMMdd-HHmm where, MMM is the short-form month (e.g.,
+        // "Mar"), dd is the day of the month (e.g., 12), HH is the hour of the
+        // day from 0-23, and mm is the minute of the hour from 0-59.
+        strftime(lognames[0], MAX_PREFIX, "%b%d-%H%M", localtime(&now));
+        // Copy the prefix to each of the thread's names
+        for (int tid = 1; tid < NUM_THREADS; tid++) {
+            strncpy(lognames[tid], lognames[0], MAX_PREFIX);
+        }
+        fprintf(stderr, "Logging to files with prefix: '%s'", lognames[0]);
+
+        libsmctrl_set_global_mask(0xffffull); // Globally disable the first four GPCs
+
+        // The valid configurations are:
+        // - RANGE + SPLIT (ranging plot)
+        // - RANGE + TEST_PRI (unused in paper)
+        // - No defines (table data)
+
+        // Which range experiment is being run; ranging TPCs (SPLIT), or
+        // ranging stream priorities (PRI).
+#ifdef SPLIT
+#define NAME "split"
+#elif defined(TEST_PRI)
+#define NAME "pri"
+#endif
+
+#ifdef RANGE
+        // XXX: Must be manually changed
+        // XXX: The experiment shell script changes these between each
+        //      experiment by using sed to replace the literal, and then
+        //      rebuilding the code.
+        int A_bit = -2;
+        int B_bit = -3;
+        snprintf(lognames[0]+strlen(lognames[0]), MAX_POSTFIX, "-"NAME"1k-A-%d", A_bit);
+        snprintf(lognames[1]+strlen(lognames[1]), MAX_POSTFIX, "-"NAME"1k-B-%d", B_bit);
+#endif
+#ifdef TEST_PRI
+        // Print some debug information (pri_hi and _low are otherwise unused)
+        int pri_hi, pri_low;
+        cudaDeviceGetStreamPriorityRange(&pri_low, &pri_hi);
+        printf("Priority range: %d to %d. Testing %d and %d.\n", pri_low, pri_hi, A_bit, B_bit);
+#endif
+#ifdef SPLIT
+        // Tests where the lower TPCs are split between two tasks, with the
+        // amount allocated to each task varying on each subsequent exp.
+
+        // Create a libsmctl mask for each of two threads, A and B. The masks
+        // are non-overlapping, with the (A_bit + 1) lower TPCs allocated to A,
+        // and the next (B_bit + 1) TPCs allocated to B.
+        // Set A_bit lower bits in A_mask
+        uint64_t A_mask = 0;
+        for (int i = 0; i < A_bit; i++)
+            A_mask = (A_mask << 1) | 1;
+        // Invert to get a disable mask
+        A_mask = ~A_mask
+        // Set B_bit lower bits in B_mask
+        uint64_t B_mask = 0;
+        for (int i = 0; i < B_bit; i++)
+            B_mask = (B_mask << 1) | 1;
+        // Shift mask for B to use a different set of TPCs than for A
+        B_mask <<= A_bit;
+        B_mask = ~B_mask
+#elif defined(RANGE) // !SPLIT and RANGE, a.k.a TEST_PRI
+        // Tests where no TPC mask is used (only priority is varied)
+        uint64_t A_mask = ~0xffull;
+        uint64_t B_mask = ~0xffull;
+#endif
+        // Arguments to extra.h
+#ifdef RANGE
+        char *argv_1[8] = {"<n/a>", "t1", "1000",  "7", lognames[0], "1", "420", "0"};
+        char *argv_2[8] = {"<n/a>", "t2", "1000", "15", lognames[1], "1", "420", "0"};
+#else // !defined(RANGE). "ordinary" experiment
+        /*
+        char* core;
+        if (argv[2][6] == '-') {
+            strncat(lognames[0], "_8solo_10k-B", MAX_POSTFIX);
+            core = "15";
+        } else {
+            strncat(lognames[0], "_8solo_10k-A", MAX_POSTFIX);
+            core = "7";
+        }
+        char *argv_1[8] = {"<n/a>", "t1", "10000", core, lognames[0], "1", "420", "0"};
+        */
+        // Arguments: [unused], name, loops, my core, runID, saveResults?, taskPeriod, taskCriticality
+        // <save results> and <run ID> does not matter if task is run in evil
+        // mode, as the SAVE_RESULTS function is skipped. ID still listed here
+        // to make the code self-documenting.
+        //
+        // Core allocations on AMD 3950X:
+        // - CPU0, CCX0 (interrupts)
+        // - CPU0--CPU7, CCX0 (test)
+        // - CPU8--CPU15, CCX1 (evil)
+
+        //char *argv_1[8] = {"<n/a>", "t1", "200", "7", strncat(lognames[0], "_8split_with_6evil_200", MAX_POSTFIX), "1", "420", "0"};
+        char *argv_1[8] = {"<n/a>", "t1", "10000",  "7", strncat(lognames[0], "_8split_with_4semievil_10k", MAX_POSTFIX), "1", "420", "0"};
+        char *argv_2[8] = {"<n/a>", "t2", "10000", "15", strncat(lognames[1], "evil", MAX_POSTFIX), "1", "420", "0"};
+        //char *argv_1[8] = {"<n/a>", "t1", "10000",  "7", strncat(lognames[0], "_10k-4", MAX_POSTFIX), "1", "500", "0"};
+        //char *argv_2[8] = {"<n/a>", "t2", "10000", "15", strncat(lognames[1], "_10k-2", MAX_POSTFIX), "1", "500", "0"};
+        //char *argv_3[8] = {"<n/a>", "t3", "10000", "14", strncat(lognames[2], "_10k-1", MAX_POSTFIX), "1", "500", "0"};
+#endif
+        char *argv_3[8] = {"<n/a>", "t3", "10000", "14", "evil_10k", "1", "420", "0"};
+        char *argv_4[8] = {"<n/a>", "t4", "10000", "13", "evil_10k", "1", "420", "0"};
+        char *argv_5[8] = {"<n/a>", "t5", "10000", "12", "evil_10k", "1", "420", "0"};
+        char *argv_6[8] = {"<n/a>", "t6", "10000", "11", "evil_10k", "1", "420", "0"};
+        char *argv_7[8] = {"<n/a>", "t7", "10000", "10", "evil_10k", "1", "420", "0"};
+        char *argv_8[8] = {"<n/a>", "t8", "10000",  "9", "evil_10k", "1", "420", "0"};
+
+// Case 1: ~0xffull, NUM_THREADS=1
+// Case 2: ~0xffull, ~0xffull, NUM_THREADS=2
+// Case 3: ~0xffull, ~0xffull (x6), NUM_THREADS=5, 8shared_with_4semievil_10k
+// Case 4: ~0xf0ull, ~0x0full (x6), NUM_THREADS=5, 8split_with_4semievil_10k
+
+
+        // Default configuration: every thread is evil
+        // Actual arguments to validate_detector()
+        validate_thread_args_t thread_args[8] = {
+#ifdef SPLIT // && RANGE
+            {datacfg, cfg, weights, "rtas23",   A_mask, 8, argv_1, &t1_evil},
+            {datacfg, cfg, weights, "rtas23_2", B_mask, 8, argv_2, &t2_evil},
+#elif defined(TEST_PRI) // && RANGE
+            {datacfg, cfg, weights, "rtas23",   A_mask, 8, argv_1, &t1_evil, true, A_bit},
+            {datacfg, cfg, weights, "rtas23_2", B_mask, 8, argv_2, &t2_evil, true, B_bit},
+#else // "ordinary" experiment
+            {datacfg, cfg, weights, "rtas23",   ~0xf0ull, 8, argv_1, &t1_evil},
+            {datacfg, cfg, weights, "rtas23_2", ~0x0full, 8, argv_2, &t2_evil},
+#endif
+            {datacfg, cfg, weights, "rtas23_3", ~0x0full, 8, argv_3, &t2_evil},
+            {datacfg, cfg, weights, "rtas23_4", ~0x0full, 8, argv_4, &t2_evil},
+            {datacfg, cfg, weights, "rtas23_5", ~0x0full, 8, argv_5, &t2_evil},
+            {datacfg, cfg, weights, "rtas23_6", ~0x0full, 8, argv_6, &t2_evil},
+            {datacfg, cfg, weights, "rtas23_7", ~0x0full, 8, argv_7, &t2_evil},
+            {datacfg, cfg, weights, "rtas23_8", ~0xffull, 8, argv_8, &t2_evil}
+        };
+        for (int tid = 0; tid < NUM_THREADS; tid++) {
+            pthread_create(&t[tid], NULL, validate_detector, &thread_args[tid]);
+        }
+        for (int tid = 0; tid < NUM_THREADS; tid++) {
+            pthread_join(t[tid], NULL);
+            if (t2_evil)
+                t2_evil = 0;
+        }
+    }
     else if (0 == strcmp(argv[2], "recall")) validate_detector_recall(datacfg, cfg, weights);
     else if (0 == strcmp(argv[2], "map")) validate_detector_map(datacfg, cfg, weights, thresh, iou_thresh, map_points, letter_box, NULL);
     else if (0 == strcmp(argv[2], "calc_anchors")) calc_anchors(datacfg, num_of_clusters, width, height, show);
