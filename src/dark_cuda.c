@@ -115,8 +115,31 @@ dim3 cuda_gridsize(size_t n){
     return d;
 }
 
-static cudaStream_t streamsArray[16];    // cudaStreamSynchronize( get_cuda_stream() );
-static int streamInit[16] = { 0 };
+__thread cudaStream_t streamsArray[16];    // cudaStreamSynchronize( get_cuda_stream() );
+__thread int streamInit[16] = { 0 };
+
+// Emulates get_cuda_stream behavior. Only call once.
+void set_stream_priority(int pri) {
+    int i = cuda_get_device();
+    if (streamInit[i]) {
+        cudaError_t status = cudaStreamDestroy(streamsArray[i]);
+        if (status != cudaSuccess) {
+            printf(" cudaStreamDestroy error: %d \n", status);
+            const char *s = cudaGetErrorString(status);
+            printf("CUDA Error: %s\n", s);
+        }
+    }
+#ifdef CUDNN
+    cudaError_t status = cudaStreamCreateWithPriority(&streamsArray[i], cudaStreamNonBlocking, pri);
+#else
+    cudaError_t status = cudaStreamCreateWithPriority(&streamsArray[i], cudaStreamDefault, pri);
+#endif
+    if (status != cudaSuccess) {
+        printf(" cudaStreamCreate error: %d \n", status);
+        const char *s = cudaGetErrorString(status);
+        printf("CUDA Error: %s\n", s);
+    }
+}
 
 cudaStream_t get_cuda_stream() {
     int i = cuda_get_device();
@@ -140,8 +163,8 @@ cudaStream_t get_cuda_stream() {
 }
 
 /*
-static cudaStream_t streamsArray2[16];    // cudaStreamSynchronize( get_cuda_memcpy_stream() );
-static int streamInit2[16] = { 0 };
+__thread cudaStream_t streamsArray2[16];    // cudaStreamSynchronize( get_cuda_memcpy_stream() );
+__thread int streamInit2[16] = { 0 };
 
 cudaStream_t get_cuda_memcpy_stream() {
     int i = cuda_get_device();
@@ -163,8 +186,8 @@ cudaStream_t get_cuda_memcpy_stream() {
 */
 
 #ifdef CUDNN
-static int cudnnInit[16] = { 0 };
-static cudnnHandle_t cudnnHandle[16];
+__thread int cudnnInit[16] = { 0 };
+__thread cudnnHandle_t cudnnHandle[16];
 
 cudnnHandle_t cudnn_handle()
 {
@@ -233,8 +256,8 @@ void cudnn_check_error_extended(cudnnStatus_t status, const char *file, int line
     cudnn_check_error(status);
 }
 
-static cudnnHandle_t switchCudnnHandle[16];
-static int switchCudnnInit[16];
+__thread cudnnHandle_t switchCudnnHandle[16];
+__thread int switchCudnnInit[16];
 #endif
 
 
@@ -267,8 +290,8 @@ void cublas_check_error_extended(cublasStatus_t status, const char *file, int li
     cublas_check_error(status);
 }
 
-static int blasInit[16] = { 0 };
-static cublasHandle_t blasHandle[16];
+__thread int blasInit[16] = { 0 };
+__thread cublasHandle_t blasHandle[16];
 
 cublasHandle_t blas_handle()
 {
@@ -283,11 +306,11 @@ cublasHandle_t blas_handle()
 }
 
 
-static int switchBlasInit[16] = { 0 };
-static cublasHandle_t switchBlasHandle[16];
+__thread int switchBlasInit[16] = { 0 };
+__thread cublasHandle_t switchBlasHandle[16];
 
-static cudaStream_t switchStreamsArray[16];
-static int switchStreamInit[16] = { 0 };
+__thread cudaStream_t switchStreamsArray[16];
+__thread int switchStreamInit[16] = { 0 };
 
 cudaStream_t switch_stream(int i) {
     int dev_id = cuda_get_device();
@@ -334,9 +357,9 @@ cudaStream_t switch_stream(int i) {
 #define cudaEventWaitDefault 0x00
 #endif // cudaEventWaitDefault
 
-static const int max_events = 1024;
-static cudaEvent_t switchEventsArray[1024];
-static volatile int event_counter = 0;
+__thread const int max_events = 1024;
+__thread cudaEvent_t switchEventsArray[1024];
+__thread volatile int event_counter = 0;
 
 void wait_stream(int i) {
     int dev_id = cuda_get_device();
@@ -361,12 +384,12 @@ void reset_wait_stream_events() {
 }
 
 
-static float **pinned_ptr = NULL;
-static size_t pinned_num_of_blocks = 0;
-static size_t pinned_index = 0;
-static size_t pinned_block_id = 0;
-static const size_t pinned_block_size = (size_t)1024 * 1024 * 1024 * 1;   // 1 GB block size
-static pthread_mutex_t mutex_pinned = PTHREAD_MUTEX_INITIALIZER;
+__thread float **pinned_ptr = NULL;
+__thread size_t pinned_num_of_blocks = 0;
+__thread size_t pinned_index = 0;
+__thread size_t pinned_block_id = 0;
+__thread const size_t pinned_block_size = (size_t)1024 * 1024 * 1024 * 1;   // 1 GB block size
+__thread pthread_mutex_t mutex_pinned = PTHREAD_MUTEX_INITIALIZER;
 
 // free CPU-pinned memory
 void free_pinned_memory()
