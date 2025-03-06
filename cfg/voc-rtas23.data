@@ -1,0 +1,4 @@
+classes = 20
+valid = ./data/voc.2012.all
+train = ./data/voc.2012.all
+names=data/voc.names

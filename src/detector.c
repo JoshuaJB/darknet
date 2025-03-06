@@ -8,6 +8,8 @@
 #include "box.h"
 #include "demo.h"
 #include "option_list.h"
+#include "extra.h"
+#include "../../libsmctrl/libsmctrl.h"
 
 #ifndef __COMPAR_FN_T
 #define __COMPAR_FN_T
@@ -20,6 +22,52 @@ typedef __compar_fn_t comparison_fn_t;
 #include "http_stream.h"
 
 int check_mistakes = 0;
+
+// === Case Study Declarations ===
+#define MAX_THREADS 8
+
+// Substructure
+typedef struct {
+    char* __unused;
+    char* name;
+    char* loops; // How many periods to execute
+    char* core; // CPU core to use
+    char* runID; // File name to output to, without the .txt extension
+    char* save; // If output should be saved or not
+    char* period; // Period to pass to LITMUS-RT (milliseconds)
+    char* criticality; // Criticality to pass to LITMUS-RT
+} extra_argv_t;
+
+// In order to allow running validate_detector() in a thread via
+// pthread_create(), it can only take one argument. This structure is used as
+// that one argument.
+typedef struct {
+    // First four arguments are original to Darknet
+    char *datacfg;
+    char *cfgfile;
+    char *weightfile;
+    char *outfile;
+    // Partitioning mask to be applied to this detector thread
+    uint64_t sm_mask;
+    // Arguments to extra.h
+    int argc;
+    union {
+        extra_argv_t *extra_argv;
+        char** argv;
+    };
+    // Flag value. Once set, the detector thread constantly calls
+    // network_predict() in a loop to generate interference. Once cleared, said
+    // thread will immediately exit. Used to create "evil" tasks in the case
+    // study.
+    // Ignored if NULL.
+    bool *evil;
+    // Set to use the priority value (as 0 is a valid priority, it cannot be
+    // used as a flag value)
+    bool use_priority;
+    // CUDA stream priority to use with this detector
+    int priority;
+} validate_thread_args_t;
+// === End Case Study Declarations ===
 
 static int coco_ids[] = { 1,2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,20,21,22,23,24,25,27,28,31,32,33,34,35,36,37,38,39,40,41,42,43,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,67,70,72,73,74,75,76,77,78,79,80,81,82,84,85,86,87,88,89,90 };
 
@@ -640,8 +688,14 @@ static void print_bdd_detections(FILE *fp, char *image_path, detection *dets, in
     }
 }
 
-void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *outfile)
+void* validate_detector(void *args_raw)
 {
+    validate_thread_args_t *argz = (validate_thread_args_t*)args_raw;
+    char *datacfg = argz->datacfg;
+    char *cfgfile = argz->cfgfile;
+    char *weightfile = argz->weightfile;
+    char *outfile = argz->outfile;
+
     int j;
     list *options = read_data_cfg(datacfg);
     char *valid_images = option_find_str(options, "valid", "data/train.list");
@@ -733,7 +787,7 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
     float thresh = .001;
     float nms = .6;
 
-    int nthreads = 4;
+    int nthreads = 1;
     if (m < 4) nthreads = m;
     image* val = (image*)xcalloc(nthreads, sizeof(image));
     image* val_resized = (image*)xcalloc(nthreads, sizeof(image));
@@ -748,6 +802,12 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
     args.type = IMAGE_DATA;
     const int letter_box = net.letter_box;
     if (letter_box) args.type = LETTERBOX_DATA;
+    if (argz->use_priority) {
+        set_stream_priority(argz->priority);
+        printf("Using priority %d with stream %lx\n", argz->priority, (uintptr_t)get_cuda_stream());
+    }
+    printf("Using mask %lx with stream %lx\n", argz->sm_mask, (uintptr_t)get_cuda_stream());
+    libsmctrl_set_stream_mask(get_cuda_stream(), argz->sm_mask);
 
     for (t = 0; t < nthreads; ++t) {
         args.path = paths[i + t];
@@ -756,8 +816,11 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
         thr[t] = load_data_in_thread(args);
     }
     time_t start = time(0);
-    for (i = nthreads; i < m + nthreads; i += nthreads) {
-        fprintf(stderr, "%d\n", i);
+    if (argz->argc) {
+        printf("%s: Waiting for task system release...\n", argz->argv[4]);
+        _rt_load_params_itrl(argz->argc, argz->argv);
+    }
+    for (i = nthreads; i < m + nthreads && (!argz->argc || i < _rt_max_jobs); i += nthreads) {
         for (t = 0; t < nthreads && i + t - nthreads < m; ++t) {
             pthread_join(thr[t], 0);
             val[t] = buf[t];
@@ -770,10 +833,21 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
             thr[t] = load_data_in_thread(args);
         }
         for (t = 0; t < nthreads && i + t - nthreads < m; ++t) {
+            if (argz->argc)
+                START_LOOP
             char *path = paths[i + t - nthreads];
             char *id = basecfg(path);
             float *X = val_resized[t].data;
-            network_predict(net, X);
+            // Flip this flag to trigger a "malfunction", i.e. infinite loop.
+            // Flip it back to exit the malfunctioning thread.
+            if (argz->argc && argz->evil && *argz->evil) {
+                while (*argz->evil) {
+                    network_predict(net, X);
+                }
+                return NULL;
+            } else {
+                network_predict(net, X);
+            }
             int w = val[t].w;
             int h = val[t].h;
             int nboxes = 0;
@@ -782,6 +856,8 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
                 if (l.nms_kind == DEFAULT_NMS) do_nms_sort(dets, nboxes, l.classes, nms);
                 else diounms_sort(dets, nboxes, l.classes, nms, l.nms_kind, l.beta_nms);
             }
+            if (argz->argc)
+                STOP_LOOP
 
             if (coco) {
                 print_cocos(fp, path, dets, nboxes, classes, w, h);
@@ -839,6 +915,9 @@ void validate_detector(char *datacfg, char *cfgfile, char *weightfile, char *out
     if (buf_resized) free(buf_resized);
 
     fprintf(stderr, "Total Detection Time: %f Seconds\n", (double)time(0) - start);
+    if (argz->argc)
+        WRITE_TO_FILE
+    return NULL;
 }
 
 void validate_detector_recall(char *datacfg, char *cfgfile, char *weightfile)
@@ -2037,7 +2116,235 @@ void run_detector(int argc, char **argv)
     char *filename = (argc > 6) ? argv[6] : 0;
     if (0 == strcmp(argv[2], "test")) test_detector(datacfg, cfg, weights, filename, thresh, hier_thresh, dont_show, ext_output, save_labels, outfile, letter_box, benchmark_layers);
     else if (0 == strcmp(argv[2], "train")) train_detector(datacfg, cfg, weights, gpus, ngpus, clear, dont_show, calc_map, thresh, iou_thresh, mjpeg_port, show_imgs, benchmark_layers, chart_path);
-    else if (0 == strcmp(argv[2], "valid")) validate_detector(datacfg, cfg, weights, outfile);
+    else if (0 == strcmp(argv[2], "valid")) {
+        // All members without an explict initializer are initialized following
+        // static initialization rules, which are that the value must be zero
+        // (C Std, 6.7.8/10).
+        validate_thread_args_t args = {datacfg, cfg, weights, outfile};
+        validate_detector(&args);
+    }
+    else if (0 == strncmp(argv[2], "rtas23", 6)) {
+        bool evil_flag = 0;
+        int NUM_THREADS = 0;
+        pthread_t t[MAX_THREADS];
+        // Generate output naming
+        const int MAX_POSTFIX = 100;
+        const int MAX_PREFIX = 11;
+        char lognames[MAX_THREADS][MAX_PREFIX + MAX_POSTFIX];
+        time_t now = time(NULL);
+        // Use prefix MMMdd-HHmm where, MMM is the short-form month (e.g.,
+        // "Mar"), dd is the day of the month (e.g., 12), HH is the hour of the
+        // day from 0-23, and mm is the minute of the hour from 0-59.
+        strftime(lognames[0], MAX_PREFIX, "%b%d-%H%M", localtime(&now));
+        // Copy the prefix to each of the thread's names
+        // (copies needed, as we write in a thread-specific postfix later)
+        for (int tid = 1; tid < MAX_THREADS; tid++) {
+            strncpy(lognames[tid], lognames[0], MAX_PREFIX);
+        }
+        fprintf(stderr, "Logging to files with prefix: '%s'\n", lognames[0]);
+
+        libsmctrl_set_global_mask(0xffffull); // Globally disable the first four GPCs
+
+        // XXX: The experiment shell script changes these between each
+        //      experiment by using sed to replace the literal, and then
+        //      rebuilding the code.
+        int A_bit = 7;
+        int B_bit = 1;
+
+        // Use 10,000 iterations at a period of 420 ms as the default arguments
+        // for extra.h (all ignored for "evil" tasks).
+        // Core ID is left uninitialized, and MUST be set later.
+        // (Just init first element, then copy.)
+        // Lower the number of iterations for a faster test. 10,000 iterations
+        // will take 70 minutes to run.
+        char thread_names[MAX_THREADS][3];
+        extra_argv_t extra_argv[MAX_THREADS] = {{"<n/a>", "t1", "10000", NULL, "unnamed", "1", "420", "0"}};
+        for (int i = 1; i < MAX_THREADS; i++) {
+            extra_argv[i] = extra_argv[0];
+            snprintf(thread_names[i], 3, "t%d", i + 1);
+            extra_argv[i].name = thread_names[i];
+        }
+
+        // Make every task evil by default, then selectively enable and
+        // reconfigure as needed later.
+        // (Just init first element, then copy.)
+        char outfile_names[MAX_THREADS][9];
+        validate_thread_args_t thread_args[MAX_THREADS] = {{datacfg, cfg, weights, "rtas23_1", 0, 8, {&extra_argv[0]}, &evil_flag}};
+        for (int i = 1; i < MAX_THREADS; i++) {
+            thread_args[i] = thread_args[0];
+            thread_args[i].extra_argv = &extra_argv[i];
+            snprintf(outfile_names[i], 9, "rtas23_%d", i + 1);
+            thread_args[i].outfile = outfile_names[i];
+        }
+
+        // Case 1: ~0xffull, NUM_THREADS=1, 8alone_10k
+        // Case 2: ~0xffull, ~0xffull, NUM_THREADS=2, 8shared_10k
+        // Case 3: ~0xffull, ~0xffull (x6), NUM_THREADS=5, 8shared_with_4semievil_10k
+        // Case 4: ~0xf0ull, ~0x0full (x6), NUM_THREADS=5, 8split_with_4semievil_10k
+
+        // We assume a AMD 3950X. This has the layout:
+        // - CPU0--CPU7, Core Complex 0 (CCX0) (test)
+        // - CPU8--CPU15, Core Complex 1 (CCX1) (evil)
+
+        // Detect which part of the case study to run, and configure it
+        if (0 == strcmp(argv[2], "rtas23-case1")) {
+            // (Tbl. III, Case 1 in the paper.)
+            // Only one instance
+            NUM_THREADS = 1;
+            // On core 7
+            thread_args[0].extra_argv->core = "7";
+            // Which does not malfunction (run in "evil" mode)
+            thread_args[0].evil = NULL;
+            // With name
+            thread_args[0].extra_argv->runID = strncat(lognames[0], "_8alone_10k", MAX_POSTFIX);
+            // On eight TPCs
+            thread_args[0].sm_mask = ~0xffull;
+        } else if (0 == strcmp(argv[2], "rtas23-case2")) {
+            // (Tbl. III, Case 2 in the paper.)
+            // Two instances
+            NUM_THREADS = 2;
+            // On core 7 and 15
+            thread_args[0].extra_argv->core = "7";
+            thread_args[1].extra_argv->core = "15";
+            // Where neither malfunction
+            thread_args[0].evil = NULL;
+            thread_args[1].evil = NULL;
+            // With names
+            thread_args[0].extra_argv->runID = strncat(lognames[0], "_8shared_10k-A", MAX_POSTFIX);
+            thread_args[1].extra_argv->runID = strncat(lognames[1], "_8shared_10k-B", MAX_POSTFIX);
+            // While sharing eight TPCs
+            thread_args[0].sm_mask = ~0xffull;
+            thread_args[1].sm_mask = ~0xffull;
+        } else if (0 == strcmp(argv[2], "rtas23-case3")) {
+            // (Tbl. III, Case 3 in the paper.)
+            // Five instances
+            NUM_THREADS = 5;
+            // On core 7 and 15--12
+            thread_args[0].extra_argv->core = "7";
+            thread_args[1].extra_argv->core = "15";
+            thread_args[2].extra_argv->core = "14";
+            thread_args[3].extra_argv->core = "13";
+            thread_args[4].extra_argv->core = "12";
+            // Where none run in the evil mode (the last four of these
+            // collectively represent "Malfunctioning YOLOv2" in the paper)
+            thread_args[0].evil = NULL;
+            thread_args[1].evil = NULL;
+            thread_args[2].evil = NULL;
+            thread_args[3].evil = NULL;
+            thread_args[4].evil = NULL;
+            // With a name for the instance under test
+            thread_args[0].extra_argv->runID = strncat(lognames[0], "_8shared_with4semievil_10k", MAX_POSTFIX);
+            // And all share eight TPCs
+            thread_args[0].sm_mask = ~0xffull;
+            thread_args[1].sm_mask = ~0xffull;
+            thread_args[2].sm_mask = ~0xffull;
+            thread_args[3].sm_mask = ~0xffull;
+            thread_args[4].sm_mask = ~0xffull;
+        } else if (0 == strcmp(argv[2], "rtas23-case4")) {
+            // (Tbl. III, Case 4 in the paper.)
+            // Five instances
+            NUM_THREADS = 5;
+            // On core 7 and 15--12
+            thread_args[0].extra_argv->core = "7";
+            thread_args[1].extra_argv->core = "15";
+            thread_args[2].extra_argv->core = "14";
+            thread_args[3].extra_argv->core = "13";
+            thread_args[4].extra_argv->core = "12";
+            // Where none run in the evil mode (the last four of these
+            // collectively represent "Malfunctioning YOLOv2" in the paper)
+            thread_args[0].evil = NULL;
+            thread_args[1].evil = NULL;
+            thread_args[2].evil = NULL;
+            thread_args[3].evil = NULL;
+            thread_args[4].evil = NULL;
+            // With a name for the instance under test
+            thread_args[0].extra_argv->runID = strncat(lognames[0], "_8split_with4semievil_10k", MAX_POSTFIX);
+            // And the 8 TPCs are split 50/50 between the non-malfunctioning
+            // and malfunctioning instances.
+            thread_args[0].sm_mask = ~0xf0ull;
+            thread_args[1].sm_mask = ~0x0full;
+            thread_args[2].sm_mask = ~0x0full;
+            thread_args[3].sm_mask = ~0x0full;
+            thread_args[4].sm_mask = ~0x0full;
+        } else if (0 == strcmp(argv[2], "rtas23-split")) {
+            // Tests where the lower TPCs are split between two tasks, with the
+            // amount allocated to each task varying on each subsequent exp.
+            // (Fig. 14 in the paper.)
+
+            // Create a libsmctl mask for each of two instances, A and B. The
+            // masks are non-overlapping, with the (A_bit + 1) lower TPCs
+            // allocated to A, and the next (B_bit + 1) TPCs allocated to B.
+            // Set A_bit lower bits in A_mask
+            uint64_t A_mask = 0;
+            for (int i = 0; i < A_bit; i++)
+                A_mask = (A_mask << 1) | 1;
+            // Invert to get a disable mask
+            A_mask = ~A_mask;
+            // Set B_bit lower bits in B_mask
+            uint64_t B_mask = 0;
+            for (int i = 0; i < B_bit; i++)
+                B_mask = (B_mask << 1) | 1;
+            // Shift mask for B to use a different set of TPCs than for A
+            B_mask <<= A_bit;
+            B_mask = ~B_mask;
+            // Two instances
+            NUM_THREADS = 2;
+            // On core 7 and 15
+            thread_args[0].extra_argv->core = "7";
+            thread_args[1].extra_argv->core = "15";
+            // Where neither malfunction
+            thread_args[0].evil = NULL;
+            thread_args[1].evil = NULL;
+            // With names
+            thread_args[0].extra_argv->runID = strncat(lognames[0], "-split10k-A", MAX_POSTFIX);
+            thread_args[1].extra_argv->runID = strncat(lognames[1], "-split10k-B", MAX_POSTFIX);
+            // While sharing eight TPCs
+            thread_args[0].sm_mask = A_mask;
+            thread_args[1].sm_mask = B_mask;
+        } else if (0 == strcmp(argv[2], "rtas23-pri")) {
+            // Tests where no TPC mask is used (only priority is varied)
+            // (Does not appear in the paper.)
+
+            // Print some debug information
+            int pri_hi, pri_low;
+            cudaDeviceGetStreamPriorityRange(&pri_low, &pri_hi);
+            fprintf(stderr, "Priority range: %d to %d. Testing %d and %d.\n", pri_low, pri_hi, A_bit, B_bit);
+            // Two instances
+            NUM_THREADS = 2;
+            // On core 7 and 15
+            thread_args[0].extra_argv->core = "7";
+            thread_args[1].extra_argv->core = "15";
+            // Where neither malfunction
+            thread_args[0].evil = NULL;
+            thread_args[1].evil = NULL;
+            // With names
+            thread_args[0].extra_argv->runID = strncat(lognames[0], "-pri1k-A", MAX_POSTFIX);
+            thread_args[1].extra_argv->runID = strncat(lognames[1], "-pri1k-B", MAX_POSTFIX);
+            // While sharing eight TPCs
+            thread_args[0].sm_mask = ~0xffull;
+            thread_args[1].sm_mask = ~0xffull;
+            // With per-stream prioritization enabled
+            thread_args[0].use_priority = true;
+            thread_args[1].use_priority = true;
+            // And set
+            thread_args[0].priority = A_bit;
+            thread_args[1].priority = B_bit;
+            // For only 1,000 samples
+            thread_args[0].extra_argv->loops = "1000";
+            thread_args[1].extra_argv->loops = "1000";
+        } else {
+            printf(" There isn't such command: %s", argv[2]);
+        }
+        for (int tid = 0; tid < NUM_THREADS; tid++) {
+            pthread_create(&t[tid], NULL, validate_detector, &thread_args[tid]);
+        }
+        for (int tid = 0; tid < NUM_THREADS; tid++) {
+            pthread_join(t[tid], NULL);
+            // Terminate the "evil" threads (if any)
+            if (evil_flag)
+                evil_flag = 0;
+        }
+    }
     else if (0 == strcmp(argv[2], "recall")) validate_detector_recall(datacfg, cfg, weights);
     else if (0 == strcmp(argv[2], "map")) validate_detector_map(datacfg, cfg, weights, thresh, iou_thresh, map_points, letter_box, NULL);
     else if (0 == strcmp(argv[2], "calc_anchors")) calc_anchors(datacfg, num_of_clusters, width, height, show);

@@ -64,3 +64,4 @@ uselib
 uselib_track
 darknet
 vcpkg/
+results/

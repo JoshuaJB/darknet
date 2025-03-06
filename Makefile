@@ -1,4 +1,4 @@
-GPU=0
+GPU=1
 CUDNN=0
 CUDNN_HALF=0
 OPENCV=0
@@ -20,7 +20,8 @@ DEBUG=0
 ARCH= -gencode arch=compute_35,code=sm_35 \
       -gencode arch=compute_50,code=[sm_50,compute_50] \
       -gencode arch=compute_52,code=[sm_52,compute_52] \
-	    -gencode arch=compute_61,code=[sm_61,compute_61]
+      -gencode arch=compute_61,code=[sm_61,compute_61] \
+      -gencode arch=compute_70,code=[sm_70,compute_70]
 
 OS := $(shell uname)
 
@@ -74,11 +75,15 @@ CC=gcc
 endif
 
 CPP=g++ -std=c++11
-NVCC=nvcc
+NVCC ?= nvcc
 OPTS=-Ofast
-LDFLAGS= -lm -pthread
-COMMON= -Iinclude/ -I3rdparty/stb/include
+LDFLAGS= -lm -pthread -L$(LIBLITMUS) -llitmus
+COMMON= -Iinclude/ -I3rdparty/stb/include -I$(LIBLITMUS)/include/ -I$(LIBLITMUS)/arch/x86/include/
 CFLAGS=-Wall -Wfatal-errors -Wno-unused-result -Wno-unknown-pragmas -fPIC
+# Default liblitmus path if unspecified
+LIBLITMUS ?= ../liblitmus
+# Default libsmctrl path if unspecified
+LIBSMCTRL ?= ../libsmctrl
 
 ifeq ($(DEBUG), 1)
 #OPTS= -O0 -g
@@ -119,7 +124,7 @@ CFLAGS+= -DGPU
 ifeq ($(OS),Darwin) #MAC
 LDFLAGS+= -L/usr/local/cuda/lib -lcuda -lcudart -lcublas -lcurand
 else
-LDFLAGS+= -L/usr/local/cuda/lib64 -lcuda -lcudart -lcublas -lcurand
+LDFLAGS+= -L$(LIBSMCTRL) -lsmctrl -L/usr/local/cuda/lib64 -lcuda -lcudart -lcublas -lcurand
 endif
 endif
 
